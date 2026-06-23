@@ -17,7 +17,6 @@ is set. We patch `cron.scheduler.tick` (both tickers import it locally as
 drives it and stops promptly.
 """
 import threading
-import time
 from unittest.mock import patch
 
 
@@ -28,13 +27,17 @@ def test_ticker_calls_tick_at_least_once_then_stops():
 
     calls = []
     stop = threading.Event()
+    ticked = threading.Event()
 
     def fake_tick(*args, **kwargs):
         calls.append(kwargs)
+        ticked.set()
         return 0
 
     with patch("cron.scheduler.tick", side_effect=fake_tick):
-        # interval=0 keeps the loop tight; stop after a brief beat.
+        # interval=0 keeps the loop tight; wait for the first tick (rather than
+        # a fixed sleep, which is flaky under loaded CI when the daemon thread
+        # is slow to schedule) then stop.
         t = threading.Thread(
             target=_start_cron_ticker,
             args=(stop,),
@@ -42,7 +45,7 @@ def test_ticker_calls_tick_at_least_once_then_stops():
             daemon=True,
         )
         t.start()
-        time.sleep(0.2)
+        assert ticked.wait(timeout=5), "ticker never called tick()"
         stop.set()
         t.join(timeout=5)
 
@@ -61,9 +64,11 @@ def test_desktop_ticker_calls_tick_then_stops():
 
     calls = []
     stop = threading.Event()
+    ticked = threading.Event()
 
     def fake_tick(*args, **kwargs):
         calls.append(kwargs)
+        ticked.set()
         return 0
 
     with patch("cron.scheduler.tick", side_effect=fake_tick):
@@ -74,7 +79,7 @@ def test_desktop_ticker_calls_tick_then_stops():
             daemon=True,
         )
         t.start()
-        time.sleep(0.2)
+        assert ticked.wait(timeout=5), "desktop ticker never called tick()"
         stop.set()
         t.join(timeout=5)
 
@@ -136,15 +141,21 @@ def test_inprocess_provider_ticks_and_stops():
 
     calls = []
     stop = threading.Event()
+    ticked = threading.Event()
     prov = InProcessCronScheduler()
     assert prov.name == "builtin"
 
-    with patch("cron.scheduler.tick", side_effect=lambda *a, **k: calls.append(k) or 0):
+    def fake_tick(*a, **k):
+        calls.append(k)
+        ticked.set()
+        return 0
+
+    with patch("cron.scheduler.tick", side_effect=fake_tick):
         t = threading.Thread(
             target=prov.start, args=(stop,), kwargs={"interval": 0}, daemon=True
         )
         t.start()
-        time.sleep(0.2)
+        assert ticked.wait(timeout=5), "provider never called tick()"
         stop.set()
         t.join(timeout=5)
 
